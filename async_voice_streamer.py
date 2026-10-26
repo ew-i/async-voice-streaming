@@ -10,10 +10,12 @@ import sys
 import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from enum import Enum
 from queue import Empty, Full, Queue
 
 from elevenlabs import stream as play_audio_stream
 from elevenlabs.client import ElevenLabs
+from elevenlabs.core import RequestOptions
 
 logger = logging.getLogger(__name__)
 
@@ -24,13 +26,19 @@ MODEL_ID = "eleven_multilingual_v2"
 MAX_BUFFERED_CHUNKS = 50
 CONSUMER_WAIT_SECONDS = 5
 PRODUCER_WAIT_SECONDS = 0.5
+STALL_TIMEOUT_SECONDS = 15
 
 DEMO_TEXT = (
     "This is a simple python script showcasing asynchronous real-time voice streaming "
     "with the ElevenLabs API."
 )
 
-_END_OF_STREAM = object()
+
+class _EndOfStream(Enum):
+    TOKEN = "end of stream"
+
+
+_END_OF_STREAM = _EndOfStream.TOKEN
 
 
 class AudioBuffer:
@@ -41,7 +49,7 @@ class AudioBuffer:
     """
 
     def __init__(self, max_chunks: int = MAX_BUFFERED_CHUNKS) -> None:
-        self._items: Queue = Queue(maxsize=max_chunks)
+        self._items: Queue[bytes | _EndOfStream] = Queue(maxsize=max_chunks)
         self._cancelled = threading.Event()
 
     def put(self, chunk: bytes) -> bool:
@@ -60,7 +68,7 @@ class AudioBuffer:
                 return
             yield item
 
-    def _offer(self, item: object) -> bool:
+    def _offer(self, item: bytes | _EndOfStream) -> bool:
         while not self._cancelled.is_set():
             try:
                 self._items.put(item, timeout=PRODUCER_WAIT_SECONDS)
@@ -69,7 +77,7 @@ class AudioBuffer:
                 continue
         return False
 
-    def _wait_for_item(self) -> object:
+    def _wait_for_item(self) -> bytes | _EndOfStream:
         while True:
             try:
                 return self._items.get(timeout=CONSUMER_WAIT_SECONDS)
@@ -81,11 +89,16 @@ class AudioBuffer:
 
 
 def receive_audio_stream(
-    client: ElevenLabs, text: str, voice_id: str, buffer: AudioBuffer
+        client: ElevenLabs, text: str, voice_id: str, buffer: AudioBuffer
 ) -> None:
     logger.info("Receiving audio stream...")
     try:
-        chunks = client.text_to_speech.stream(voice_id=voice_id, text=text, model_id=MODEL_ID)
+        chunks = client.text_to_speech.stream(
+            voice_id=voice_id,
+            text=text,
+            model_id=MODEL_ID,
+            request_options=RequestOptions(timeout_in_seconds=STALL_TIMEOUT_SECONDS),
+        )
         for chunk in chunks:
             if not chunk:
                 continue
