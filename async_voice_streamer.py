@@ -6,6 +6,8 @@ thread plays them back, so playback starts with the first chunk.
 
 import logging
 import os
+import shutil
+import signal
 import sys
 import threading
 from collections.abc import Iterator
@@ -27,6 +29,10 @@ MAX_BUFFERED_CHUNKS = 50
 CONSUMER_WAIT_SECONDS = 5
 PRODUCER_WAIT_SECONDS = 0.5
 STALL_TIMEOUT_SECONDS = 15
+
+EXIT_SUCCESS = 0
+EXIT_FAILURE = 1
+EXIT_INTERRUPTED = 128 + signal.SIGINT
 
 DEMO_TEXT = (
     "This is a simple python script showcasing asynchronous real-time voice streaming "
@@ -122,6 +128,8 @@ def play_audio(buffer: AudioBuffer) -> None:
 def stream_speech(client: ElevenLabs, text: str, voice_id: str = DEFAULT_VOICE_ID) -> None:
     if not text.strip():
         raise ValueError("Text to speak must not be empty.")
+    if shutil.which("mpv") is None:
+        raise RuntimeError("mpv is required for audio playback but was not found on PATH.")
 
     buffer = AudioBuffer()
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="ElevenLabs-Receiver") as pool:
@@ -139,16 +147,19 @@ def main() -> int:
     api_key = os.environ.get(API_KEY_ENV_VAR)
     if not api_key:
         logger.error("%s is missing from the environment variables.", API_KEY_ENV_VAR)
-        return 1
+        return EXIT_FAILURE
 
     try:
         stream_speech(ElevenLabs(api_key=api_key), DEMO_TEXT)
+    except KeyboardInterrupt:
+        logger.info("Interrupted.")
+        return EXIT_INTERRUPTED
     except Exception:
         logger.exception("Voice streaming failed.")
-        return 1
+        return EXIT_FAILURE
 
     logger.info("Voice streaming completed.")
-    return 0
+    return EXIT_SUCCESS
 
 
 if __name__ == "__main__":
